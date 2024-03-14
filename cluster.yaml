@@ -1,0 +1,131 @@
+# dask cluster
+apiVersion: kubernetes.dask.org/v1
+kind: DaskCluster
+metadata:
+  name: shuffle-cluster
+spec:
+  worker:
+    replicas: 1
+    spec:
+      containers:
+      - name: worker
+        image: "ghcr.io/dask/dask:2024.2.0"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          requests:
+            cpu: "150m"
+          limits:
+            cpu: "150m"
+        args:
+          - dask-worker
+          - --name
+          - $(DASK_WORKER_NAME)
+          - --dashboard
+          - --dashboard-address
+          - "8788"
+        ports:
+          - name: http-dashboard
+            containerPort: 8788
+            protocol: TCP
+  scheduler:
+    spec:
+      containers:
+      - name: scheduler
+        image: "ghcr.io/dask/dask:2024.2.0"
+        imagePullPolicy: "IfNotPresent"
+        args:
+          - dask-scheduler
+        ports:
+          - name: tcp-comm
+            containerPort: 8786
+            protocol: TCP
+          - name: http-dashboard
+            containerPort: 8787
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            port: http-dashboard
+            path: /health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            port: http-dashboard
+            path: /health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+    service:
+      type: NodePort
+      selector:
+        dask.org/cluster-name: shuffle-cluster
+        dask.org/component: scheduler
+      ports:
+      - name: tcp-comm
+        protocol: TCP
+        port: 8786
+        targetPort: "tcp-comm"
+      - name: http-dashboard
+        protocol: TCP
+        port: 8787
+        targetPort: "http-dashboard"
+
+---
+# dask autoscaler
+apiVersion: kubernetes.dask.org/v1
+kind: DaskAutoscaler
+metadata:
+  name: shuffle-autoscaler
+spec:
+  cluster: shuffle-cluster
+  minimum: 1
+  maximum: 5
+
+---
+# cluster role
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: shuffle-cluster-role
+rules:
+  - apiGroups: [kubernetes.dask.org]
+    resources: [daskclusters, daskworkergroups, daskworkergroups/scale, daskjobs, daskautoscalers]
+    verbs: [get, list, watch, patch, create, delete]
+  - apiGroups:
+    - "" 
+    resources: [pods, pods/status]
+    verbs:
+    - "get"
+    - "list"
+    - "watch"
+  - apiGroups:
+    - ""
+    resources: [services]
+    verbs:
+    - "get"
+    - "list"
+    - "watch"
+
+---
+# service account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shuffle-account
+
+---
+# role binding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shuffle-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: shuffle-cluster-role
+subjects:
+  - kind: ServiceAccount
+    name: shuffle-account
+    namespace: default
+
+
+
